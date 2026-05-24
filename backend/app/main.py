@@ -13,3 +13,25 @@ def startup():
 app.include_router(router)
 @app.get('/')
 def root(): return {'status':'ok','name':'APEX-MOTOS'}
+from app.database import SessionLocal
+from app.models import User
+
+@app.on_event("startup")
+def create_admin():
+    db = SessionLocal()
+
+    admin = db.query(User).filter(User.username == "admin").first()
+
+    if not admin:
+        new_admin = User(
+            username="admin",
+            password="admin123",
+            role="admin"
+        )
+
+        db.add(new_admin)
+        db.commit()
+
+        print("ADMIN CREADO")
+
+    db.close()
