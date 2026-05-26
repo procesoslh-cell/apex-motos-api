@@ -1,4 +1,4 @@
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const API_URL = process.env.NEXT_PUBLIC_API_URL || https://apex-motos-api.onrender.com;
 
 function normalizePath(path: string) {
   if (path.startsWith("/api/")) return path;
