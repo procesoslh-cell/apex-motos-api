@@ -11,7 +11,7 @@ export default function Login(){
   async function submit(e:any){
     e.preventDefault();setError('');setLoading(true);
     try{
-      const d=await apiPost('/api/auth/login',{username,password});
+      const d=await apiPost('/auth/login',{username,password});
       localStorage.setItem('token',d.token);
       localStorage.setItem('user',JSON.stringify(d.user));
       window.location.href='/';
