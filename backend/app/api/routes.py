@@ -1,8 +1,10 @@
 from fastapi import APIRouter,Depends,HTTPException,UploadFile,File,Header
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, func
-from datetime import datetime
+from datetime import datetime, timedelta
 import pandas as pd
+from io import BytesIO
+from fastapi.responses import StreamingResponse
 from ..database import get_db
 from ..models import User,Supplier,Product,ProductSupplier,Purchase,Sale,SaleItem,Contact,Category,SubCategory,CostHistory
 from ..schemas import *
@@ -106,6 +108,29 @@ def product_payload(p):
         it={'supplier_id':ps.supplier_id,'supplier_name':ps.supplier.name,'supplier_sku':ps.supplier_sku,'supplier_price':ps.supplier_price,'supplier_stock':ps.supplier_stock,'coefficient':ps.supplier.freight_coefficient,'calculated_cost':ps.calculated_cost,'updated_at':ps.updated_at}
         suppliers.append(it); best=it if best is None or it['calculated_cost']<best['calculated_cost'] else best
     return {'id':p.id,'sku':p.sku,'name':p.name,'description':p.description,'category':p.category,'subcategory':p.subcategory,'brand':p.brand,'compatibility':p.compatibility,'stock':p.stock,'reserved_stock':p.reserved_stock,'available_stock':(p.stock or 0)-(p.reserved_stock or 0),'min_stock':p.min_stock,'cost':p.cost,'margin':p.margin,'sale_price':p.sale_price,'active':p.active,'suppliers':suppliers,'best_supplier':best}
+
+def product_min_payload(p):
+    return {
+        'id':p.id,
+        'sku':p.sku,
+        'name':p.name,
+        'description':p.description or '',
+        'brand':p.brand or '',
+        'stock':p.stock or 0,
+        'reserved_stock':p.reserved_stock or 0,
+        'available_stock':(p.stock or 0)-(p.reserved_stock or 0),
+        'sale_price':p.sale_price or 0,
+        'active':p.active,
+    }
+
+def parse_date_param(v, end=False):
+    if not v:
+        return None
+    try:
+        d=datetime.strptime(v[:10], '%Y-%m-%d')
+        return d + timedelta(days=1) if end else d
+    except Exception:
+        raise HTTPException(400, 'Fecha invalida. Usar YYYY-MM-DD')
 
 @router.post('/auth/login')
 def login(p:LoginIn,db:Session=Depends(get_db)):
@@ -219,6 +244,19 @@ def products(q:str='',db:Session=Depends(get_db),u:User=Depends(current_user)):
     qry=db.query(Product)
     if q: qry=qry.filter(or_(Product.sku.ilike(f'%{q}%'),Product.name.ilike(f'%{q}%'),Product.category.ilike(f'%{q}%'),Product.subcategory.ilike(f'%{q}%'),Product.brand.ilike(f'%{q}%')))
     return [product_payload(p) for p in qry.order_by(Product.sku).all()]
+
+@router.get('/products/search')
+def products_search(q:str='',limit:int=20,db:Session=Depends(get_db),u:User=Depends(current_user)):
+    q=(q or '').strip()
+    if len(q)<2:
+        return []
+    limit=max(1,min(limit,30))
+    like=f'%{q}%'
+    rows=db.query(Product).filter(
+        Product.active==1,
+        or_(Product.sku.ilike(like),Product.name.ilike(like),Product.description.ilike(like),Product.brand.ilike(like))
+    ).order_by(Product.sku).limit(limit).all()
+    return [product_min_payload(p) for p in rows]
 
 @router.get('/products/{id}')
 def get_product(id:int,db:Session=Depends(get_db),u:User=Depends(current_user)):
@@ -369,8 +407,51 @@ def sale(p:SaleIn,db:Session=Depends(get_db),u:User=Depends(current_user)):
         line=it.quantity*it.unit_price; subtotal+=line; db.add(SaleItem(sale_id=x.id,product_id=prod.id,quantity=it.quantity,unit_price=it.unit_price,total=line))
     x.subtotal=subtotal; x.total=max(subtotal-(p.discount or 0),0); db.commit(); db.refresh(x); return x
 @router.get('/sales')
-def sales(db:Session=Depends(get_db),u:User=Depends(current_user)):
-    return [sale_payload(db,x) for x in db.query(Sale).order_by(Sale.id.desc()).all()]
+def sales(date_from:str='',date_to:str='',db:Session=Depends(get_db),u:User=Depends(current_user)):
+    start=parse_date_param(date_from) if date_from else datetime.utcnow()-timedelta(days=2)
+    end=parse_date_param(date_to, end=True) if date_to else None
+    qry=db.query(Sale).filter(Sale.created_at>=start)
+    if end:
+        qry=qry.filter(Sale.created_at<end)
+    return [sale_payload(db,x) for x in qry.order_by(Sale.id.desc()).all()]
+
+@router.get('/sales/export')
+def sales_export(date_from:str='',date_to:str='',db:Session=Depends(get_db),u:User=Depends(current_user)):
+    start=parse_date_param(date_from) if date_from else datetime.utcnow()-timedelta(days=2)
+    end=parse_date_param(date_to, end=True) if date_to else None
+    qry=db.query(Sale).filter(Sale.created_at>=start)
+    if end:
+        qry=qry.filter(Sale.created_at<end)
+    rows=[]
+    for s in qry.order_by(Sale.created_at.desc()).all():
+        if s.items:
+            for it in s.items:
+                prod=db.query(Product).filter(Product.id==it.product_id).first()
+                rows.append({
+                    'ID':s.id,'Tipo':s.type,'Estado':s.status,'Fecha':s.created_at,
+                    'Cliente':s.customer_name,'Documento':s.customer_document,'Telefono':s.customer_phone,
+                    'Medio de pago':s.payment_method,'Vendedor':s.seller,
+                    'SKU':prod.sku if prod else '','Producto':prod.name if prod else '',
+                    'Cantidad':it.quantity,'Precio unitario':it.unit_price,'Total renglon':it.total,
+                    'Subtotal comprobante':s.subtotal,'Descuento':s.discount,'Total comprobante':s.total,
+                    'Observaciones':s.notes,
+                })
+        else:
+            rows.append({
+                'ID':s.id,'Tipo':s.type,'Estado':s.status,'Fecha':s.created_at,
+                'Cliente':s.customer_name,'Documento':s.customer_document,'Telefono':s.customer_phone,
+                'Medio de pago':s.payment_method,'Vendedor':s.seller,
+                'SKU':'','Producto':'','Cantidad':0,'Precio unitario':0,'Total renglon':0,
+                'Subtotal comprobante':s.subtotal,'Descuento':s.discount,'Total comprobante':s.total,
+                'Observaciones':s.notes,
+            })
+    df=pd.DataFrame(rows)
+    output=BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer,index=False,sheet_name='Ventas')
+    output.seek(0)
+    filename=f"historial_ventas_{datetime.utcnow().strftime('%Y%m%d_%H%M')}.xlsx"
+    return StreamingResponse(output,media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',headers={'Content-Disposition':f'attachment; filename="{filename}"'})
 
 @router.get('/sales/{sale_id}')
 def sale_detail(sale_id:int,db:Session=Depends(get_db),u:User=Depends(current_user)):
@@ -386,5 +467,24 @@ def sale_update(sale_id:int,p:SaleUpdateIn,db:Session=Depends(get_db),u:User=Dep
     allowed={'payment_method','seller','notes','customer_name','customer_phone','customer_document','customer_email','customer_address','contact_id'}
     for k,v in data.items():
         if k in allowed: setattr(x,k,v)
+    db.commit(); db.refresh(x)
+    return sale_payload(db,x)
+
+@router.patch('/sales/{sale_id}/convert')
+def sale_convert(sale_id:int,db:Session=Depends(get_db),u:User=Depends(current_user)):
+    x=db.query(Sale).filter(Sale.id==sale_id).first()
+    if not x: raise HTTPException(404,'Comprobante no encontrado')
+    if x.type!='Presupuesto':
+        return sale_payload(db,x)
+    for it in x.items:
+        prod=db.query(Product).filter(Product.id==it.product_id).first()
+        if not prod: raise HTTPException(404,'Producto no encontrado')
+        if (prod.stock or 0) < (it.quantity or 0):
+            raise HTTPException(400,f'Stock insuficiente para {prod.sku} {prod.name}')
+    for it in x.items:
+        prod=db.query(Product).filter(Product.id==it.product_id).first()
+        prod.stock=(prod.stock or 0)-(it.quantity or 0)
+    x.type='Pedido de venta'
+    x.status='Registrado'
     db.commit(); db.refresh(x)
     return sale_payload(db,x)

@@ -1,4 +1,4 @@
-const API_URL = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, '');
+export const API_URL = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, '');
 
 function normalizePath(path: string) {
   if (!path.startsWith('/')) path = `/${path}`;
@@ -80,4 +80,21 @@ export async function apiUpload(path: string, file: File) {
       body: f,
     })
   );
+}
+
+export async function apiDownload(path: string, filename: string) {
+  const r = await fetch(`${API_URL}${normalizePath(path)}`, {
+    headers: authHeaders(),
+    cache: 'no-store',
+  });
+  if (!r.ok) throw new Error(await r.text());
+  const blob = await r.blob();
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.URL.revokeObjectURL(url);
 }
