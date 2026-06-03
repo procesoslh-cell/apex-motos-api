@@ -23,6 +23,18 @@ class SaleIn(BaseModel):
     contact_id:Optional[int]=None; customer_name:str=''; customer_phone:str=''; customer_document:str=''; customer_email:str=''; customer_address:str=''
     items:List[SaleItemIn]
 
+class SaleUpdateIn(BaseModel):
+    # Edicion segura: permite corregir datos del comprobante sin tocar stock ni renglones vendidos.
+    payment_method:Optional[str]=None
+    seller:Optional[str]=None
+    notes:Optional[str]=None
+    customer_name:Optional[str]=None
+    customer_phone:Optional[str]=None
+    customer_document:Optional[str]=None
+    customer_email:Optional[str]=None
+    customer_address:Optional[str]=None
+    contact_id:Optional[int]=None
+
 class PriceAdjustmentIn(BaseModel):
     percent:float
     category:str=''

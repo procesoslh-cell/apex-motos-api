@@ -77,6 +77,29 @@ def ensure_category(db:Session, category_name:str, subcategory_name:str='General
     return category_name, subcategory_name
 
 
+
+def sale_payload(db:Session, x:Sale):
+    items=[]
+    for it in x.items:
+        prod=db.query(Product).filter(Product.id==it.product_id).first()
+        items.append({
+            'id':it.id,
+            'product_id':it.product_id,
+            'sku':prod.sku if prod else '',
+            'name':prod.name if prod else '',
+            'quantity':it.quantity or 0,
+            'unit_price':it.unit_price or 0,
+            'total':it.total or 0,
+        })
+    return {
+        'id':x.id,'type':x.type,'status':x.status,'contact_id':x.contact_id,
+        'customer_name':x.customer_name,'customer_phone':x.customer_phone,'customer_document':x.customer_document,
+        'customer_email':x.customer_email,'customer_address':x.customer_address,
+        'payment_method':x.payment_method,'seller':x.seller,'discount':x.discount or 0,
+        'subtotal':x.subtotal or 0,'total':x.total or 0,'notes':x.notes or '',
+        'created_at':x.created_at,'items':items
+    }
+
 def product_payload(p):
     suppliers=[]; best=None
     for ps in p.suppliers:
@@ -346,4 +369,22 @@ def sale(p:SaleIn,db:Session=Depends(get_db),u:User=Depends(current_user)):
         line=it.quantity*it.unit_price; subtotal+=line; db.add(SaleItem(sale_id=x.id,product_id=prod.id,quantity=it.quantity,unit_price=it.unit_price,total=line))
     x.subtotal=subtotal; x.total=max(subtotal-(p.discount or 0),0); db.commit(); db.refresh(x); return x
 @router.get('/sales')
-def sales(db:Session=Depends(get_db),u:User=Depends(current_user)): return db.query(Sale).order_by(Sale.id.desc()).all()
+def sales(db:Session=Depends(get_db),u:User=Depends(current_user)):
+    return [sale_payload(db,x) for x in db.query(Sale).order_by(Sale.id.desc()).all()]
+
+@router.get('/sales/{sale_id}')
+def sale_detail(sale_id:int,db:Session=Depends(get_db),u:User=Depends(current_user)):
+    x=db.query(Sale).filter(Sale.id==sale_id).first()
+    if not x: raise HTTPException(404,'Comprobante no encontrado')
+    return sale_payload(db,x)
+
+@router.patch('/sales/{sale_id}')
+def sale_update(sale_id:int,p:SaleUpdateIn,db:Session=Depends(get_db),u:User=Depends(current_user)):
+    x=db.query(Sale).filter(Sale.id==sale_id).first()
+    if not x: raise HTTPException(404,'Comprobante no encontrado')
+    data=p.model_dump(exclude_unset=True)
+    allowed={'payment_method','seller','notes','customer_name','customer_phone','customer_document','customer_email','customer_address','contact_id'}
+    for k,v in data.items():
+        if k in allowed: setattr(x,k,v)
+    db.commit(); db.refresh(x)
+    return sale_payload(db,x)

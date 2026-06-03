@@ -50,6 +50,16 @@ export async function apiPut(path: string, body: unknown) {
   );
 }
 
+export async function apiPatch(path: string, body: unknown) {
+  return parse(
+    await fetch(`${API_URL}${normalizePath(path)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify(body),
+    })
+  );
+}
+
 export async function apiDelete(path: string) {
   return parse(
     await fetch(`${API_URL}${normalizePath(path)}`, {
