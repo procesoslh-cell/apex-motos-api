@@ -487,4 +487,4 @@ def sale_convert(sale_id:int,db:Session=Depends(get_db),u:User=Depends(current_u
     x.type='Pedido de venta'
     x.status='Registrado'
     db.commit(); db.refresh(x)
-    return sale_payload(db,x)
+    return sale_payload(db,x) 

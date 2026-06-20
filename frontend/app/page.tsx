@@ -92,4 +92,4 @@ export default function Home(){
     <h2 style={{marginTop:24}}>Módulos</h2>
     <div className='module-grid'>{modules.map(([i,t,desc,h])=><Link href={h} className='module' key={h}><div className='icon'>{i}</div><b>{t}</b><p className='small'>{desc}</p></Link>)}</div>
   </Shell>
-}
+} 
