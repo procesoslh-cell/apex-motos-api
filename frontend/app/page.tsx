@@ -16,14 +16,37 @@ const modules=[
 
 function money(v:number){return new Intl.NumberFormat('es-AR',{style:'currency',currency:'ARS',maximumFractionDigits:0}).format(v||0)}
 function date(v:string){return v?new Date(v).toLocaleDateString('es-AR'):'-'}
+function iso(d:Date){return d.toISOString().slice(0,10)}
+function monthRange(offset=0){const now=new Date();const first=new Date(now.getFullYear(),now.getMonth()+offset,1);const last=new Date(now.getFullYear(),now.getMonth()+offset+1,0);return {start:iso(first),end:iso(last)}}
+function todayRange(){const now=new Date();return {start:iso(now),end:iso(now)}}
 
 export default function Home(){
   const[d,setD]=useState<any>(null);
-  useEffect(()=>{apiGet('/dashboard').then(setD).catch(console.error)},[]);
+  const[loading,setLoading]=useState(false);
+  const initial=monthRange(0);
+  const[startDate,setStartDate]=useState(initial.start);
+  const[endDate,setEndDate]=useState(initial.end);
+
+  async function load(s=startDate,e=endDate){
+    setLoading(true);
+    try{
+      const qs=new URLSearchParams();
+      if(s) qs.set('start_date',s);
+      if(e) qs.set('end_date',e);
+      setD(await apiGet(`/dashboard?${qs.toString()}`));
+    }catch(err){console.error(err)}
+    finally{setLoading(false)}
+  }
+  useEffect(()=>{load(initial.start,initial.end)},[]);
+
+  function applyRange(r:{start:string,end:string}){setStartDate(r.start);setEndDate(r.end);load(r.start,r.end)}
   const kpis=[
     ['products','Productos activos',d?.products??'-','Maestro de productos'],
     ['low_stock','Productos bajo stock',d?.low_stock??'-','Reponer primero'],
-    ['sales_total','Ventas registradas',money(d?.sales_total),'Pedidos de venta'],
+    ['sales_total','Ventas del período',money(d?.sales_total),'Pedidos de venta'],
+    ['sold_cost','Costo mercadería vendida',money(d?.sold_cost),'Costo de productos vendidos'],
+    ['gross_profit','Utilidad bruta',money(d?.gross_profit),'Venta menos costo'],
+    ['gross_margin','Margen bruto %',`${Number(d?.gross_margin||0).toFixed(1)}%`,'Utilidad / ventas'],
     ['stock_value','Valor de stock',money(d?.stock_value),'Costo inventario'],
     ['potential_sale_value','Valor potencial',money(d?.potential_sale_value),'Stock a precio venta'],
     ['quotes','Presupuestos',d?.quotes??'-','Oportunidades abiertas']
@@ -33,11 +56,26 @@ export default function Home(){
       <div>
         <span className='badge'>ERP comercial APEX-MOTOS</span>
         <h1>Dashboard comercial</h1>
-        <p className='muted'>Vista rápida para vender mejor: stock crítico, rotación, ventas, compras y accesos directos.</p>
+        <p className='muted'>Vista rápida para vender mejor: stock crítico, rotación, ventas, utilidad y accesos directos.</p>
       </div>
       <div className='actions'>
         <Link className='btn' href='/ventas'>Nueva venta</Link>
         <Link className='btn secondary' href='/compras'>Importar compra</Link>
+      </div>
+    </div>
+
+    <div className='card' style={{marginBottom:18}}>
+      <div className='section-title'>
+        <h2>Período del dashboard</h2>
+        <span className='small'>{loading?'Actualizando...':'Indicadores calculados según fecha de venta'}</span>
+      </div>
+      <div className='form-row'>
+        <label><span className='small'>Desde</span><input className='input' type='date' value={startDate} onChange={e=>setStartDate(e.target.value)}/></label>
+        <label><span className='small'>Hasta</span><input className='input' type='date' value={endDate} onChange={e=>setEndDate(e.target.value)}/></label>
+        <button className='btn' onClick={()=>load()}>Aplicar filtro</button>
+        <button className='btn secondary' onClick={()=>applyRange(todayRange())}>Hoy</button>
+        <button className='btn secondary' onClick={()=>applyRange(monthRange(0))}>Este mes</button>
+        <button className='btn secondary' onClick={()=>applyRange(monthRange(-1))}>Mes anterior</button>
       </div>
     </div>
 
@@ -63,7 +101,7 @@ export default function Home(){
       <div className='card'>
         <div className='section-title'><h2>Más vendidos / rotación</h2><Link href='/ventas' className='small'>Ver ventas →</Link></div>
         <div className='table-wrap'><table className='table'><thead><tr><th>SKU</th><th>Producto</th><th>Unid.</th><th>Total</th></tr></thead><tbody>
-          {(d?.top_selling||[]).length===0&&<tr><td colSpan={4} className='muted'>Todavía no hay pedidos de venta registrados.</td></tr>}
+          {(d?.top_selling||[]).length===0&&<tr><td colSpan={4} className='muted'>Todavía no hay pedidos de venta registrados en este período.</td></tr>}
           {(d?.top_selling||[]).map((p:any)=><tr key={p.id}>
             <td><b>{p.sku}</b></td><td>{p.name}<div className='small'>Stock actual: {p.stock}</div></td><td>{p.quantity}</td><td>{money(p.amount)}</td>
           </tr>)}
@@ -73,9 +111,9 @@ export default function Home(){
 
     <div className='dashboard-layout secondary-layout'>
       <div className='card'>
-        <div className='section-title'><h2>Ventas recientes</h2><span className='small'>Presupuestos y pedidos</span></div>
+        <div className='section-title'><h2>Ventas del período</h2><span className='small'>Presupuestos y pedidos filtrados</span></div>
         <div className='table-wrap'><table className='table'><thead><tr><th>Fecha</th><th>Tipo</th><th>Cliente</th><th>Total</th></tr></thead><tbody>
-          {(d?.recent_sales||[]).length===0&&<tr><td colSpan={4} className='muted'>Sin ventas recientes.</td></tr>}
+          {(d?.recent_sales||[]).length===0&&<tr><td colSpan={4} className='muted'>Sin ventas en este período.</td></tr>}
           {(d?.recent_sales||[]).map((s:any)=><tr key={s.id}><td>{date(s.created_at)}</td><td><span className={s.type==='Presupuesto'?'pill warn':'pill ok'}>{s.type}</span></td><td>{s.customer_name||'Consumidor final'}</td><td>{money(s.total)}</td></tr>)}
         </tbody></table></div>
       </div>
