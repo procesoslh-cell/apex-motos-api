@@ -282,6 +282,67 @@ def products(q:str='',db:Session=Depends(get_db),u:User=Depends(current_user)):
     if q: qry=qry.filter(or_(Product.sku.ilike(f'%{q}%'),Product.name.ilike(f'%{q}%'),Product.category.ilike(f'%{q}%'),Product.subcategory.ilike(f'%{q}%'),Product.brand.ilike(f'%{q}%')))
     return [product_payload(p) for p in qry.order_by(Product.sku).all()]
 
+@router.get('/products/paged')
+def products_paged(q:str='',limit:int=50,offset:int=0,db:Session=Depends(get_db),u:User=Depends(current_user)):
+    limit=max(1,min(limit,200))
+    offset=max(0,offset)
+    qry=db.query(Product)
+    if q:
+        like=f'%{q.strip()}%'
+        qry=qry.filter(or_(
+            Product.sku.ilike(like),
+            Product.name.ilike(like),
+            Product.description.ilike(like),
+            Product.category.ilike(like),
+            Product.subcategory.ilike(like),
+            Product.brand.ilike(like),
+            Product.compatibility.ilike(like),
+        ))
+    total=qry.count()
+    rows=qry.order_by(Product.sku).offset(offset).limit(limit).all()
+    return {'items':[product_payload(p) for p in rows],'total':total,'limit':limit,'offset':offset}
+
+@router.get('/products/export')
+def products_export(db:Session=Depends(get_db),u:User=Depends(current_user)):
+    rows=[]
+    for p in db.query(Product).order_by(Product.sku).all():
+        best=None
+        for ps in p.suppliers:
+            supplier_name=ps.supplier.name if ps.supplier else ''
+            calculated=ps.calculated_cost or 0
+            if best is None or calculated < (best.get('calculated_cost') or 0):
+                best={'supplier_name':supplier_name,'supplier_sku':ps.supplier_sku,'supplier_price':ps.supplier_price,'supplier_stock':ps.supplier_stock,'calculated_cost':calculated}
+        rows.append({
+            'SKU':p.sku,
+            'DESCRIPCION':p.name,
+            'DETALLE':p.description or '',
+            'CATEGORIA':p.category or '',
+            'SUBCATEGORIA':p.subcategory or '',
+            'MARCA':p.brand or '',
+            'COMPATIBILIDAD':p.compatibility or '',
+            'STOCK_REAL':p.stock or 0,
+            'STOCK_RESERVADO':p.reserved_stock or 0,
+            'STOCK_DISPONIBLE':(p.stock or 0)-(p.reserved_stock or 0),
+            'STOCK_MINIMO':p.min_stock or 0,
+            'COSTO':p.cost or 0,
+            'MARGEN':p.margin or 0,
+            'PRECIO_VENTA':p.sale_price or 0,
+            'ACTIVO':p.active,
+            'MEJOR_PROVEEDOR':best.get('supplier_name') if best else '',
+            'SKU_PROVEEDOR':best.get('supplier_sku') if best else '',
+            'COSTO_PROVEEDOR':best.get('supplier_price') if best else '',
+            'STOCK_PROVEEDOR':best.get('supplier_stock') if best else '',
+            'COSTO_CALCULADO':best.get('calculated_cost') if best else '',
+            'ULTIMA_ACTUALIZACION':p.updated_at,
+        })
+    df=pd.DataFrame(rows)
+    output=BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='Maestro productos')
+    output.seek(0)
+    headers={'Content-Disposition':'attachment; filename="maestro_productos_apex.xlsx"'}
+    return StreamingResponse(output, media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', headers=headers)
+
 @router.get('/products/search')
 def products_search(q:str='',limit:int=20,db:Session=Depends(get_db),u:User=Depends(current_user)):
     q=(q or '').strip()
