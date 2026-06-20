@@ -49,6 +49,17 @@ class Product(Base):
     cost=Column(Float,default=0); margin=Column(Float,default=0); sale_price=Column(Float,default=0)
     active=Column(Integer,default=1); updated_at=Column(DateTime,default=datetime.utcnow)
     suppliers=relationship('ProductSupplier',back_populates='product')
+    kit_components=relationship('ProductKitComponent',foreign_keys='ProductKitComponent.kit_product_id',back_populates='kit',cascade='all, delete-orphan')
+
+
+class ProductKitComponent(Base):
+    __tablename__='product_kit_components'
+    id=Column(Integer,primary_key=True)
+    kit_product_id=Column(Integer,ForeignKey('products.id'),nullable=False,index=True)
+    component_product_id=Column(Integer,ForeignKey('products.id'),nullable=False,index=True)
+    quantity=Column(Float,default=1)
+    kit=relationship('Product',foreign_keys=[kit_product_id],back_populates='kit_components')
+    component=relationship('Product',foreign_keys=[component_product_id])
 
 class ProductSupplier(Base):
     __tablename__='product_suppliers'

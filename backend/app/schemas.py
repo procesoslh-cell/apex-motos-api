@@ -16,6 +16,8 @@ class ProductIn(BaseModel):
     sku:str; name:str; description:str=''; category:str='General'; subcategory:str='General'; brand:str=''; compatibility:str=''
     stock:float=0; reserved_stock:float=0; min_stock:float=0; cost:float=0; margin:float=0; sale_price:float=0; active:int=1
 class ProductSupplierIn(BaseModel): product_id:int; supplier_id:int; supplier_sku:str; supplier_price:float; supplier_stock:float=0
+class KitComponentIn(BaseModel): component_product_id:int; quantity:float=1
+class ProductKitIn(BaseModel): components:List[KitComponentIn]
 class PurchaseIn(BaseModel): supplier_id:int; product_id:int; quantity:float; unit_cost:float
 class SaleItemIn(BaseModel): product_id:int; quantity:float; unit_price:float
 class SaleIn(BaseModel):

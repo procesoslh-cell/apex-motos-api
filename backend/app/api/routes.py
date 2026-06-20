@@ -6,7 +6,7 @@ import pandas as pd
 from io import BytesIO
 from fastapi.responses import StreamingResponse
 from ..database import get_db
-from ..models import User,Supplier,Product,ProductSupplier,Purchase,Sale,SaleItem,Contact,Category,SubCategory,CostHistory
+from ..models import User,Supplier,Product,ProductSupplier,ProductKitComponent,Purchase,Sale,SaleItem,Contact,Category,SubCategory,CostHistory
 from ..schemas import *
 from ..security import hash_password,verify_password,create_token,user_id_from_token
 router=APIRouter(prefix='/api')
@@ -80,12 +80,21 @@ def ensure_category(db:Session, category_name:str, subcategory_name:str='General
 
 
 
+def product_unit_cost_for_sale(prod):
+    if not prod: return 0
+    if getattr(prod,'kit_components',None):
+        total=0
+        for kc in prod.kit_components:
+            comp=kc.component
+            total+=(kc.quantity or 1)*((comp.cost if comp else 0) or 0)
+        return total
+    return prod.cost or 0
+
 def sale_payload(db:Session, x:Sale):
-    items=[]
-    sale_cost=0
+    items=[]; sale_cost=0
     for it in x.items:
         prod=db.query(Product).filter(Product.id==it.product_id).first()
-        unit_cost=(prod.cost if prod else 0) or 0
+        unit_cost=product_unit_cost_for_sale(prod)
         line_cost=(it.quantity or 0)*unit_cost
         line_profit=(it.total or 0)-line_cost
         items.append({
@@ -99,6 +108,7 @@ def sale_payload(db:Session, x:Sale):
             'cost':line_cost,
             'profit':line_profit,
             'margin':(line_profit/(it.total or 0)*100) if (it.total or 0) else 0,
+            'is_kit':bool(getattr(prod,'kit_components',[]) if prod else []),
             'total':it.total or 0,
         })
         if x.type=='Pedido de venta':
@@ -120,9 +130,31 @@ def product_payload(p):
     for ps in p.suppliers:
         it={'supplier_id':ps.supplier_id,'supplier_name':ps.supplier.name,'supplier_sku':ps.supplier_sku,'supplier_price':ps.supplier_price,'supplier_stock':ps.supplier_stock,'coefficient':ps.supplier.freight_coefficient,'calculated_cost':ps.calculated_cost,'updated_at':ps.updated_at}
         suppliers.append(it); best=it if best is None or it['calculated_cost']<best['calculated_cost'] else best
-    return {'id':p.id,'sku':p.sku,'name':p.name,'description':p.description,'category':p.category,'subcategory':p.subcategory,'brand':p.brand,'compatibility':p.compatibility,'stock':p.stock,'reserved_stock':p.reserved_stock,'available_stock':(p.stock or 0)-(p.reserved_stock or 0),'min_stock':p.min_stock,'cost':p.cost,'margin':p.margin,'sale_price':p.sale_price,'active':p.active,'suppliers':suppliers,'best_supplier':best}
+    components=[]
+    kit_available=None
+    for kc in getattr(p,'kit_components',[]) or []:
+        comp=kc.component
+        if not comp: continue
+        required=kc.quantity or 1
+        avail=((comp.stock or 0)-(comp.reserved_stock or 0))/required if required else 0
+        kit_available=avail if kit_available is None else min(kit_available, avail)
+        components.append({'id':kc.id,'component_product_id':kc.component_product_id,'quantity':required,'sku':comp.sku,'name':comp.name,'stock':comp.stock or 0,'available_stock':(comp.stock or 0)-(comp.reserved_stock or 0),'cost':comp.cost or 0,'sale_price':comp.sale_price or 0})
+    is_kit=len(components)>0
+    available=(int(kit_available) if kit_available is not None else (p.stock or 0)-(p.reserved_stock or 0))
+    return {'id':p.id,'sku':p.sku,'name':p.name,'description':p.description,'category':p.category,'subcategory':p.subcategory,'brand':p.brand,'compatibility':p.compatibility,'stock':p.stock,'reserved_stock':p.reserved_stock,'available_stock':available,'min_stock':p.min_stock,'cost':p.cost,'margin':p.margin,'sale_price':p.sale_price,'active':p.active,'is_kit':is_kit,'kit_available_stock':available if is_kit else None,'components':components,'suppliers':suppliers,'best_supplier':best}
 
 def product_min_payload(p):
+    components=[]
+    kit_available=None
+    for kc in getattr(p,'kit_components',[]) or []:
+        comp=kc.component
+        if not comp: continue
+        required=kc.quantity or 1
+        avail=((comp.stock or 0)-(comp.reserved_stock or 0))/required if required else 0
+        kit_available=avail if kit_available is None else min(kit_available, avail)
+        components.append({'component_product_id':kc.component_product_id,'quantity':required,'sku':comp.sku,'name':comp.name})
+    is_kit=len(components)>0
+    available=(int(kit_available) if kit_available is not None else (p.stock or 0)-(p.reserved_stock or 0))
     return {
         'id':p.id,
         'sku':p.sku,
@@ -131,9 +163,12 @@ def product_min_payload(p):
         'brand':p.brand or '',
         'stock':p.stock or 0,
         'reserved_stock':p.reserved_stock or 0,
-        'available_stock':(p.stock or 0)-(p.reserved_stock or 0),
+        'available_stock':available,
         'sale_price':p.sale_price or 0,
         'active':p.active,
+        'is_kit':is_kit,
+        'kit_available_stock':available if is_kit else None,
+        'components':components,
     }
 
 def parse_date_param(v, end=False):
@@ -387,6 +422,37 @@ def update_product(id:int,p:ProductIn,db:Session=Depends(get_db),u:User=Depends(
     x.updated_at=datetime.utcnow(); db.commit(); db.refresh(x); return product_payload(x)
 
 
+@router.get('/products/{id}/kit')
+def get_product_kit(id:int,db:Session=Depends(get_db),u:User=Depends(current_user)):
+    x=db.query(Product).filter(Product.id==id).first()
+    if not x: raise HTTPException(404,'Producto no encontrado')
+    return product_payload(x)
+
+@router.post('/products/{id}/kit')
+def set_product_kit(id:int,p:ProductKitIn,db:Session=Depends(get_db),u:User=Depends(admin_only)):
+    x=db.query(Product).filter(Product.id==id).first()
+    if not x: raise HTTPException(404,'Producto kit no encontrado')
+    for row in db.query(ProductKitComponent).filter(ProductKitComponent.kit_product_id==id).all():
+        db.delete(row)
+    seen=set()
+    for comp in p.components:
+        if comp.component_product_id==id:
+            raise HTTPException(400,'Un kit no puede contenerse a si mismo')
+        if comp.component_product_id in seen:
+            raise HTTPException(400,'Componente duplicado en el kit')
+        seen.add(comp.component_product_id)
+        cp=db.query(Product).filter(Product.id==comp.component_product_id).first()
+        if not cp: raise HTTPException(404,'Componente no encontrado')
+        if (comp.quantity or 0)<=0: raise HTTPException(400,'La cantidad del componente debe ser mayor a 0')
+        db.add(ProductKitComponent(kit_product_id=id,component_product_id=comp.component_product_id,quantity=comp.quantity))
+    x.stock=0
+    x.reserved_stock=0
+    x.updated_at=datetime.utcnow()
+    db.commit(); db.refresh(x)
+    return product_payload(x)
+
+
+
 @router.post('/products/import')
 async def import_products(file:UploadFile=File(...),db:Session=Depends(get_db),u:User=Depends(admin_only)):
     df=pd.read_excel(file.file); cm=colmap(df)
@@ -518,6 +584,24 @@ def purchases(limit:int=5,db:Session=Depends(get_db),u:User=Depends(current_user
     rows=db.query(Purchase).order_by(Purchase.id.desc()).limit(limit).all()
     return [purchase_payload(db,x) for x in rows]
 
+def check_and_move_stock_for_product(prod:Product, qty:float, direction:int):
+    # direction -1 descuenta, +1 devuelve.
+    components=getattr(prod,'kit_components',[]) or []
+    if components:
+        for kc in components:
+            comp=kc.component
+            need=(kc.quantity or 1)*(qty or 0)
+            if direction<0 and ((comp.stock or 0) < need):
+                raise HTTPException(400,f'Stock insuficiente para componente {comp.sku} {comp.name} del kit {prod.sku}')
+        for kc in components:
+            comp=kc.component
+            need=(kc.quantity or 1)*(qty or 0)
+            comp.stock=(comp.stock or 0)+(direction*need)
+    else:
+        if direction<0 and ((prod.stock or 0) < (qty or 0)):
+            raise HTTPException(400,f'Stock insuficiente para {prod.sku}')
+        prod.stock=(prod.stock or 0)+(direction*(qty or 0))
+
 @router.post('/sales')
 def sale(p:SaleIn,db:Session=Depends(get_db),u:User=Depends(current_user)):
     contact_id=p.contact_id
@@ -532,8 +616,7 @@ def sale(p:SaleIn,db:Session=Depends(get_db),u:User=Depends(current_user)):
         prod=db.query(Product).filter(Product.id==it.product_id).first()
         if not prod: raise HTTPException(404,'Producto no encontrado')
         if p.type=='Pedido de venta':
-            if (prod.stock or 0)<it.quantity: raise HTTPException(400,f'Stock insuficiente para {prod.sku}')
-            prod.stock-=it.quantity
+            check_and_move_stock_for_product(prod,it.quantity,-1)
         line=it.quantity*it.unit_price; subtotal+=line; db.add(SaleItem(sale_id=x.id,product_id=prod.id,quantity=it.quantity,unit_price=it.unit_price,total=line))
     x.subtotal=subtotal; x.total=max(subtotal-(p.discount or 0),0); db.commit(); db.refresh(x); return x
 @router.get('/sales')
@@ -563,10 +646,9 @@ def sales_export(date_from:str='',date_to:str='',db:Session=Depends(get_db),u:Us
                     'Medio de pago':s.payment_method,'Vendedor':s.seller,
                     'SKU':prod.sku if prod else '','Producto':prod.name if prod else '',
                     'Cantidad':it.quantity,'Precio unitario':it.unit_price,'Total renglon':it.total,
-                    'Costo unitario':(prod.cost if prod else 0) or 0,
-                    'Costo renglon':(it.quantity or 0)*(((prod.cost if prod else 0) or 0)),
-                    'Utilidad renglon':(it.total or 0)-((it.quantity or 0)*(((prod.cost if prod else 0) or 0))),
-                    'Margen renglon %':(((it.total or 0)-((it.quantity or 0)*(((prod.cost if prod else 0) or 0))))/(it.total or 0)*100) if (it.total or 0) else 0,
+                    'Costo unitario':product_unit_cost_for_sale(prod),
+                    'Costo renglon':(it.quantity or 0)*product_unit_cost_for_sale(prod),
+                    'Utilidad renglon':(it.total or 0)-((it.quantity or 0)*product_unit_cost_for_sale(prod)),
                     'Subtotal comprobante':s.subtotal,'Descuento':s.discount,'Total comprobante':s.total,
                     'Observaciones':s.notes,
                 })
@@ -576,7 +658,6 @@ def sales_export(date_from:str='',date_to:str='',db:Session=Depends(get_db),u:Us
                 'Cliente':s.customer_name,'Documento':s.customer_document,'Telefono':s.customer_phone,
                 'Medio de pago':s.payment_method,'Vendedor':s.seller,
                 'SKU':'','Producto':'','Cantidad':0,'Precio unitario':0,'Total renglon':0,
-                'Costo unitario':0,'Costo renglon':0,'Utilidad renglon':0,'Margen renglon %':0,
                 'Subtotal comprobante':s.subtotal,'Descuento':s.discount,'Total comprobante':s.total,
                 'Observaciones':s.notes,
             })
@@ -609,12 +690,11 @@ def sale_update(sale_id:int,p:SaleUpdateIn,db:Session=Depends(get_db),u:User=Dep
 def sale_delete(sale_id:int,db:Session=Depends(get_db),u:User=Depends(current_user)):
     x=db.query(Sale).filter(Sale.id==sale_id).first()
     if not x: raise HTTPException(404,'Comprobante no encontrado')
-    # Si era una venta registrada, devuelve stock antes de eliminar.
     if x.type=='Pedido de venta':
         for it in x.items:
             prod=db.query(Product).filter(Product.id==it.product_id).first()
             if prod:
-                prod.stock=(prod.stock or 0)+(it.quantity or 0)
+                check_and_move_stock_for_product(prod,it.quantity,+1)
     for it in list(x.items):
         db.delete(it)
     db.delete(x)
@@ -630,11 +710,7 @@ def sale_convert(sale_id:int,db:Session=Depends(get_db),u:User=Depends(current_u
     for it in x.items:
         prod=db.query(Product).filter(Product.id==it.product_id).first()
         if not prod: raise HTTPException(404,'Producto no encontrado')
-        if (prod.stock or 0) < (it.quantity or 0):
-            raise HTTPException(400,f'Stock insuficiente para {prod.sku} {prod.name}')
-    for it in x.items:
-        prod=db.query(Product).filter(Product.id==it.product_id).first()
-        prod.stock=(prod.stock or 0)-(it.quantity or 0)
+        check_and_move_stock_for_product(prod,it.quantity,-1)
     x.type='Pedido de venta'
     x.status='Registrado'
     db.commit(); db.refresh(x)
