@@ -139,19 +139,38 @@ def login(p:LoginIn,db:Session=Depends(get_db)):
     return {'token':create_token(u.id),'user':{'id':u.id,'username':u.username,'role':u.role}}
 
 @router.get('/dashboard')
-def dash(db:Session=Depends(get_db),u:User=Depends(current_user)):
+def dash(start_date:str|None=None,end_date:str|None=None,db:Session=Depends(get_db),u:User=Depends(current_user)):
+    start=parse_date_param(start_date) if start_date else None
+    end=parse_date_param(end_date, end=True) if end_date else None
+
     products=db.query(Product).all()
-    sales_rows=db.query(Sale).order_by(Sale.created_at.desc()).limit(8).all()
+    sales_query=db.query(Sale).filter(Sale.type=='Pedido de venta')
+    quotes_query=db.query(Sale).filter(Sale.type=='Presupuesto')
+    if start:
+        sales_query=sales_query.filter(Sale.created_at>=start)
+        quotes_query=quotes_query.filter(Sale.created_at>=start)
+    if end:
+        sales_query=sales_query.filter(Sale.created_at<end)
+        quotes_query=quotes_query.filter(Sale.created_at<end)
+
+    sales_rows=sales_query.order_by(Sale.created_at.desc()).limit(8).all()
     purchase_rows=db.query(Purchase).order_by(Purchase.created_at.desc()).limit(6).all()
     low_stock_products=[{
         'id':p.id,'sku':p.sku,'name':p.name,'stock':p.stock or 0,'min_stock':p.min_stock or 0,
         'available_stock':(p.stock or 0)-(p.reserved_stock or 0),'sale_price':p.sale_price or 0
     } for p in sorted([p for p in products if (p.stock or 0) <= (p.min_stock or 0)], key=lambda x: ((x.stock or 0)-(x.min_stock or 0), x.sku))[:10]]
-    top_rows=db.query(
+
+    top_query=db.query(
         SaleItem.product_id,
         func.sum(SaleItem.quantity).label('qty'),
         func.sum(SaleItem.total).label('amount')
-    ).join(Sale, Sale.id==SaleItem.sale_id).filter(Sale.type=='Pedido de venta').group_by(SaleItem.product_id).order_by(func.sum(SaleItem.quantity).desc()).limit(8).all()
+    ).join(Sale, Sale.id==SaleItem.sale_id).filter(Sale.type=='Pedido de venta')
+    if start:
+        top_query=top_query.filter(Sale.created_at>=start)
+    if end:
+        top_query=top_query.filter(Sale.created_at<end)
+    top_rows=top_query.group_by(SaleItem.product_id).order_by(func.sum(SaleItem.quantity).desc()).limit(8).all()
+
     top_selling=[]
     for product_id,qty,amount in top_rows:
         p=db.query(Product).filter(Product.id==product_id).first()
@@ -163,22 +182,40 @@ def dash(db:Session=Depends(get_db),u:User=Depends(current_user)):
         supplier=db.query(Supplier).filter(Supplier.id==x.supplier_id).first()
         product=db.query(Product).filter(Product.id==x.product_id).first()
         recent_purchases.append({'id':x.id,'supplier_name':supplier.name if supplier else '', 'sku':product.sku if product else '', 'product_name':product.name if product else '', 'quantity':x.quantity or 0, 'total':x.total or 0, 'created_at':x.created_at})
-    sales_total=sum((x.total or 0) for x in db.query(Sale).filter(Sale.type=='Pedido de venta').all())
-    quote_total=sum((x.total or 0) for x in db.query(Sale).filter(Sale.type=='Presupuesto').all())
+
+    sales_total=sales_query.with_entities(func.coalesce(func.sum(Sale.total),0)).scalar() or 0
+    quote_total=quotes_query.with_entities(func.coalesce(func.sum(Sale.total),0)).scalar() or 0
+    sales_count=sales_query.count()
+    quote_count=quotes_query.count()
+
+    cost_query=db.query(func.coalesce(func.sum(SaleItem.quantity * Product.cost),0)).join(Sale, Sale.id==SaleItem.sale_id).join(Product, Product.id==SaleItem.product_id).filter(Sale.type=='Pedido de venta')
+    if start:
+        cost_query=cost_query.filter(Sale.created_at>=start)
+    if end:
+        cost_query=cost_query.filter(Sale.created_at<end)
+    sold_cost=cost_query.scalar() or 0
+    gross_profit=(sales_total or 0) - (sold_cost or 0)
+    gross_margin=(gross_profit / sales_total * 100) if sales_total else 0
+
     stock_value=sum((p.stock or 0)*(p.cost or 0) for p in products)
     potential_sale_value=sum((p.stock or 0)*(p.sale_price or 0) for p in products)
     return {
         'products':len(products),
         'contacts':db.query(Contact).count(),
         'suppliers':db.query(Supplier).count(),
-        'sales':db.query(Sale).filter(Sale.type=='Pedido de venta').count(),
-        'quotes':db.query(Sale).filter(Sale.type=='Presupuesto').count(),
+        'sales':sales_count,
+        'quotes':quote_count,
         'purchases':db.query(Purchase).count(),
         'low_stock':len(low_stock_products),
         'stock_value':stock_value,
         'potential_sale_value':potential_sale_value,
         'sales_total':sales_total,
         'quote_total':quote_total,
+        'sold_cost':sold_cost,
+        'gross_profit':gross_profit,
+        'gross_margin':gross_margin,
+        'period_start':start_date or '',
+        'period_end':end_date or '',
         'low_stock_products':low_stock_products,
         'top_selling':top_selling,
         'recent_sales':recent_sales,
@@ -487,4 +524,4 @@ def sale_convert(sale_id:int,db:Session=Depends(get_db),u:User=Depends(current_u
     x.type='Pedido de venta'
     x.status='Registrado'
     db.commit(); db.refresh(x)
-    return sale_payload(db,x) 
+    return sale_payload(db,x)
