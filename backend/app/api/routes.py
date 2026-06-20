@@ -84,9 +84,6 @@ def sale_payload(db:Session, x:Sale):
     items=[]
     for it in x.items:
         prod=db.query(Product).filter(Product.id==it.product_id).first()
-        unit_cost = prod.cost if prod else 0
-        line_cost = (it.quantity or 0) * (unit_cost or 0)
-        line_profit = (it.total or 0) - line_cost
         items.append({
             'id':it.id,
             'product_id':it.product_id,
@@ -94,21 +91,14 @@ def sale_payload(db:Session, x:Sale):
             'name':prod.name if prod else '',
             'quantity':it.quantity or 0,
             'unit_price':it.unit_price or 0,
-            'unit_cost':unit_cost or 0,
-            'cost':line_cost or 0,
-            'profit':line_profit or 0,
             'total':it.total or 0,
         })
-    sale_cost = sum((it.get('cost') or 0) for it in items) if x.type == 'Pedido de venta' else 0
-    sale_profit = (x.total or 0) - sale_cost if x.type == 'Pedido de venta' else 0
-    sale_margin = (sale_profit / (x.total or 0) * 100) if x.type == 'Pedido de venta' and (x.total or 0) else 0
     return {
         'id':x.id,'type':x.type,'status':x.status,'contact_id':x.contact_id,
         'customer_name':x.customer_name,'customer_phone':x.customer_phone,'customer_document':x.customer_document,
         'customer_email':x.customer_email,'customer_address':x.customer_address,
         'payment_method':x.payment_method,'seller':x.seller,'discount':x.discount or 0,
         'subtotal':x.subtotal or 0,'total':x.total or 0,'notes':x.notes or '',
-        'cost':sale_cost,'profit':sale_profit,'margin':sale_margin,
         'created_at':x.created_at,'items':items
     }
 
@@ -493,8 +483,27 @@ def purchase(p:PurchaseIn,db:Session=Depends(get_db),u:User=Depends(admin_only))
     prod=db.query(Product).filter(Product.id==p.product_id).first()
     if not prod: raise HTTPException(404,'Producto no encontrado')
     total=p.quantity*p.unit_cost; prod.stock=(prod.stock or 0)+p.quantity; prod.cost=p.unit_cost; x=Purchase(**p.model_dump(),total=total); db.add(x); db.commit(); db.refresh(x); return x
+def purchase_payload(db:Session, x:Purchase):
+    supplier=db.query(Supplier).filter(Supplier.id==x.supplier_id).first()
+    product=db.query(Product).filter(Product.id==x.product_id).first()
+    return {
+        'id':x.id,
+        'supplier_id':x.supplier_id,
+        'supplier_name':supplier.name if supplier else '',
+        'product_id':x.product_id,
+        'sku':product.sku if product else '',
+        'product_name':product.name if product else '',
+        'quantity':x.quantity or 0,
+        'unit_cost':x.unit_cost or 0,
+        'total':x.total or 0,
+        'created_at':x.created_at,
+    }
+
 @router.get('/purchases')
-def purchases(db:Session=Depends(get_db),u:User=Depends(current_user)): return db.query(Purchase).order_by(Purchase.id.desc()).all()
+def purchases(limit:int=5,db:Session=Depends(get_db),u:User=Depends(current_user)):
+    limit=max(1,min(limit,50))
+    rows=db.query(Purchase).order_by(Purchase.id.desc()).limit(limit).all()
+    return [purchase_payload(db,x) for x in rows]
 
 @router.post('/sales')
 def sale(p:SaleIn,db:Session=Depends(get_db),u:User=Depends(current_user)):
@@ -541,9 +550,6 @@ def sales_export(date_from:str='',date_to:str='',db:Session=Depends(get_db),u:Us
                     'Medio de pago':s.payment_method,'Vendedor':s.seller,
                     'SKU':prod.sku if prod else '','Producto':prod.name if prod else '',
                     'Cantidad':it.quantity,'Precio unitario':it.unit_price,'Total renglon':it.total,
-                    'Costo unitario':prod.cost if prod else 0,
-                    'Costo renglon':(it.quantity or 0) * ((prod.cost if prod else 0) or 0),
-                    'Utilidad renglon':(it.total or 0) - ((it.quantity or 0) * ((prod.cost if prod else 0) or 0)),
                     'Subtotal comprobante':s.subtotal,'Descuento':s.discount,'Total comprobante':s.total,
                     'Observaciones':s.notes,
                 })
@@ -580,22 +586,6 @@ def sale_update(sale_id:int,p:SaleUpdateIn,db:Session=Depends(get_db),u:User=Dep
         if k in allowed: setattr(x,k,v)
     db.commit(); db.refresh(x)
     return sale_payload(db,x)
-
-@router.delete('/sales/{sale_id}')
-def sale_delete(sale_id:int,db:Session=Depends(get_db),u:User=Depends(current_user)):
-    x=db.query(Sale).filter(Sale.id==sale_id).first()
-    if not x: raise HTTPException(404,'Comprobante no encontrado')
-    # Si era una venta registrada, devuelve stock antes de eliminar.
-    if x.type=='Pedido de venta':
-        for it in x.items:
-            prod=db.query(Product).filter(Product.id==it.product_id).first()
-            if prod:
-                prod.stock=(prod.stock or 0)+(it.quantity or 0)
-    for it in list(x.items):
-        db.delete(it)
-    db.delete(x)
-    db.commit()
-    return {'ok':True}
 
 @router.patch('/sales/{sale_id}/convert')
 def sale_convert(sale_id:int,db:Session=Depends(get_db),u:User=Depends(current_user)):
