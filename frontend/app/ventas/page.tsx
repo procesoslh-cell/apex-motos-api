@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import Shell from '../../components/Shell';
-import { apiDownload, apiGet, apiPatch, apiPost } from '../../lib/api';
+import { apiDelete, apiDownload, apiGet, apiPatch, apiPost } from '../../lib/api';
 
 const emptyCustomer = {
   contact_id: '',
@@ -28,6 +28,15 @@ function defaultFrom() {
 function today() {
   return ymd(new Date());
 }
+
+function money(v: any) {
+  return `$${Math.round(Number(v || 0)).toLocaleString('es-AR')}`;
+}
+
+function pct(v: any) {
+  return `${Number(v || 0).toFixed(1)}%`;
+}
+
 
 export default function Ventas() {
   const [products, setProducts] = useState<any[]>([]);
@@ -205,6 +214,21 @@ export default function Ventas() {
     }
   }
 
+  async function deleteSale(s: any) {
+    setErr('');
+    setOk('');
+    const msg = `¿Eliminar comprobante #${s.id}?\n\nSi es una venta registrada, se devolverá el stock de los productos. Esta acción no se puede deshacer.`;
+    if (!window.confirm(msg)) return;
+    try {
+      await apiDelete(`/sales/${s.id}`);
+      if (selected?.id === s.id) setSelected(null);
+      await loadSales();
+      setOk(`Comprobante #${s.id} eliminado. Si correspondía, el stock fue devuelto.`);
+    } catch (e: any) {
+      setErr(e.message);
+    }
+  }
+
   async function exportExcel() {
     setErr('');
     setOk('');
@@ -371,6 +395,9 @@ export default function Ventas() {
               <th>Fecha</th>
               <th>Medio</th>
               <th>Total</th>
+              <th>Costo</th>
+              <th>Utilidad</th>
+              <th>Margen</th>
               <th></th>
             </tr>
           </thead>
@@ -382,8 +409,16 @@ export default function Ventas() {
                 <td>{s.customer_name}</td>
                 <td>{String(s.created_at).slice(0, 19)}</td>
                 <td>{s.payment_method}</td>
-                <td>${s.total}</td>
-                <td><button className='btn secondary' onClick={() => openSale(s)}>Ver / editar</button></td>
+                <td>{money(s.total)}</td>
+                <td>{s.type === 'Pedido de venta' ? money(s.cost) : '-'}</td>
+                <td>{s.type === 'Pedido de venta' ? money(s.profit) : '-'}</td>
+                <td>{s.type === 'Pedido de venta' ? pct(s.margin) : '-'}</td>
+                <td>
+                  <div className='form-row' style={{ gap: 8, flexWrap: 'nowrap' }}>
+                    <button className='btn secondary' onClick={() => openSale(s)}>Ver / editar</button>
+                    <button className='btn secondary' title='Eliminar comprobante' onClick={() => deleteSale(s)}>🗑️</button>
+                  </div>
+                </td>
               </tr>
             ))}
           </tbody>
@@ -431,6 +466,9 @@ export default function Ventas() {
                     <th>Cant.</th>
                     <th>Precio</th>
                     <th>Total</th>
+                    <th>Costo</th>
+                    <th>Utilidad</th>
+                    <th>Margen</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -439,15 +477,23 @@ export default function Ventas() {
                       <td>{it.sku}</td>
                       <td>{it.name}</td>
                       <td>{it.quantity}</td>
-                      <td>${it.unit_price}</td>
-                      <td>${it.total}</td>
+                      <td>{money(it.unit_price)}</td>
+                      <td>{money(it.total)}</td>
+                      <td>{selected.type === 'Pedido de venta' ? money(it.cost) : '-'}</td>
+                      <td>{selected.type === 'Pedido de venta' ? money(it.profit) : '-'}</td>
+                      <td>{selected.type === 'Pedido de venta' && it.total ? pct((it.profit / it.total) * 100) : '-'}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
-            <p>Subtotal: ${selected.subtotal} · Descuento: ${selected.discount}</p>
-            <div className='total-box'>Total ${selected.total}</div>
+            <p>
+              Subtotal: {money(selected.subtotal)} · Descuento: {money(selected.discount)}
+              {selected.type === 'Pedido de venta' && (
+                <> · Costo: {money(selected.cost)} · Utilidad: {money(selected.profit)} · Margen: {pct(selected.margin)}</>
+              )}
+            </p>
+            <div className='total-box'>Total {money(selected.total)}</div>
           </div>
         </div>
       )}
